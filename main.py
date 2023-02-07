@@ -14,8 +14,8 @@ from typing import List, Tuple, cast
 from telegram import __version__ as TG_VER
 from telegram.ext import ConversationHandler, MessageHandler, filters
 from settings import bot_token as bot_token
-from sqlalchemy import insert
-from db import create_wg, add_inhabitant, user_is_in_wg, get_bins_states, get_top10_duties
+from db import create_wg, add_inhabitant, user_is_in_wg, get_bins_states, get_top10_duties, add_garbage_bin, get_wg_by_user
+from throwingqueue import ThrowingQueue
 
 try:
     from telegram import __version_info__
@@ -67,6 +67,21 @@ async def join_wg_start(update, context):
 async def join_wg_end(update, context):
     add_inhabitant(chat_id=update.message.chat_id, name=update.message.chat.first_name, flat_share_id=update.message.text)
     await update.message.reply_text(f"You joined a WG")
+    return ConversationHandler.END
+
+ADD_BIN_CONTINUE, ADD_BIN_END = range(2)
+async def add_bin_start(update, context):
+    await update.message.reply_text("Write an DevEUI of sensor for bin")
+    return ADD_BIN_CONTINUE
+async def add_bin_continue(update, context):
+    context.user_data["DevEUI"] = update.message.text
+    await update.message.reply_text(f"Now write a name of a bin, e.g. Bio or Papier")
+    return ADD_BIN_END
+async def add_bin_end(update, context):
+    context.user_data["name"] = update.message.text
+    flat_share_id = get_wg_by_user(update.message.chat_id)[0]
+    add_garbage_bin(garbage_bin_id=context.user_data["DevEUI"], name=context.user_data["name"], state=False, flat_share_id=flat_share_id)
+    await update.message.reply_text(f"You added a bin")
     return ConversationHandler.END
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -156,12 +171,6 @@ async def handle_invalid_button(update: Update, context: ContextTypes.DEFAULT_TY
         "Sorry, I could not process this button click 😕 Please send /start to get a new keyboard."
     )
 
-async def populate(context: ContextTypes.DEFAULT_TYPE):
-    states = get_bins_states(update.effective_chat.id)
-    for state, bin_name in states:
-        pass
-    await context.bot.send_message(chat_id='309972156', text='One message every minute')
-
 
 def main() -> None:
     """Run the bot."""
@@ -191,6 +200,14 @@ def main() -> None:
             JOIN_WG_END: [MessageHandler(filters.TEXT, join_wg_end)]
         },
     )
+    add_bin_handler = ConversationHandler(
+        entry_points=[CommandHandler('add_bin', add_bin_start)],
+        fallbacks=[],
+        states={
+            ADD_BIN_CONTINUE: [MessageHandler(filters.TEXT, add_bin_continue)],
+            ADD_BIN_END: [MessageHandler(filters.TEXT, add_bin_end)]
+        },
+    )
     main_menu_handler = ConversationHandler(
         entry_points=[CommandHandler('menu', main_menu_keyboard)],
         fallbacks=[CommandHandler("menu", main_menu_keyboard)],
@@ -211,6 +228,7 @@ def main() -> None:
     application.add_handler(CommandHandler("clear", clear))
     application.add_handler(create_wg_handler)
     application.add_handler(join_wg_handler)
+    application.add_handler(add_bin_handler)
     application.add_handler(main_menu_handler)
     # Run the bot until the user presses Ctrl-C
     application.run_polling()
